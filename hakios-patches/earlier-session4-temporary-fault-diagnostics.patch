@@ -1,0 +1,84 @@
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -886,6 +886,12 @@
+ 	uint32_t                   instr     = 0;
+ 
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++	{ int fault_log = 0;
++	  if (PE_parse_boot_argn("user_fault_log", &fault_log, sizeof(fault_log)) && fault_log)
++	    printf("user-instruction-fault: %s pc=0x%llx lr=0x%llx instruction=0x%08x\n",
++	      __func__, get_saved_state_pc(state), saved_state64(state)->lr, instr);
++	}
++
+ 
+ #if CONFIG_DTRACE
+ 
+@@ -1240,6 +1246,12 @@
+ 	uint32_t instr = 0;
+ 
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++	{ int fault_log = 0;
++	  if (PE_parse_boot_argn("user_fault_log", &fault_log, sizeof(fault_log)) && fault_log)
++	    printf("user-instruction-fault: %s pc=0x%llx lr=0x%llx instruction=0x%08x\n",
++	      __func__, get_saved_state_pc(state), saved_state64(state)->lr, instr);
++	}
++
+ 
+ 	exc = EXC_BAD_INSTRUCTION;
+ 	codes[0] = EXC_ARM_UNDEFINED;
+@@ -1262,6 +1274,12 @@
+ 	}
+ 
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++	{ int fault_log = 0;
++	  if (PE_parse_boot_argn("user_fault_log", &fault_log, sizeof(fault_log)) && fault_log)
++	    printf("user-instruction-fault: %s pc=0x%llx lr=0x%llx instruction=0x%08x\n",
++	      __func__, get_saved_state_pc(state), saved_state64(state)->lr, instr);
++	}
++
+ 	codes[1] = instr;
+ 
+ 	/* The floating point trap flags are only valid if TFV is set. */
+@@ -1473,6 +1491,11 @@
+ 		codes[0] = KERN_FAILURE;
+ 	}
+ 
++	uint32_t coreprime_log = 0;
++ if (PE_parse_boot_argn("user_fault_log", &coreprime_log, sizeof(coreprime_log)) && coreprime_log) {
++  printf("user_fault: esr=%x pc=%llx far=%llx type=%x code=%llx\n", esr,
++   (uint64_t)get_saved_state_pc(state), (uint64_t)fault_addr, fault_type, (uint64_t)codes[0]);
++ }
+ 	codes[1] = fault_addr;
+ #if __has_feature(ptrauth_calls)
+ 	bool is_data_abort = (ESR_EC(esr) == ESR_EC_DABORT_EL0);
+@@ -1713,6 +1736,12 @@
+ 	}
+ 
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++	{ int fault_log = 0;
++	  if (PE_parse_boot_argn("user_fault_log", &fault_log, sizeof(fault_log)) && fault_log)
++	    printf("user-instruction-fault: %s pc=0x%llx lr=0x%llx instruction=0x%08x\n",
++	      __func__, get_saved_state_pc(state), saved_state64(state)->lr, instr);
++	}
++
+ 	codes[1] = instr;
+ 
+ 	exception_triage(exception, codes, numcodes);
+--- a/bsd/miscfs/apfs/apfs_vnops.c
++++ b/bsd/miscfs/apfs/apfs_vnops.c
+@@ -732,6 +732,7 @@
+ 	int error = 0;
+ 
+ 	if (upl == NULL) {
++		printf("apfs pagein: NULL UPL offset=%lld size=%u\n", offset, (unsigned)ap->a_size);
+ 		return EINVAL;
+ 	}
+ 	if (offset < 0 || (offset & PAGE_MASK_64) || (ap->a_size & PAGE_MASK) ||
+@@ -745,6 +746,7 @@
+ 		}
+ 	}
+ 	if (error) {
++		printf("apfs pagein: setup error=%d offset=%lld size=%u upl_offset=%u\n", error, offset, (unsigned)ap->a_size, (unsigned)upl_offset);
+ 		if (!(ap->a_flags & UPL_NOCOMMIT)) {
+ 			ubc_upl_abort_range(upl, upl_offset, (upl_size_t)ap->a_size,
+ 			    UPL_ABORT_FREE_ON_EMPTY | UPL_ABORT_ERROR);

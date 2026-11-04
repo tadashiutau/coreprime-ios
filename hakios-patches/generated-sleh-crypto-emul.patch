@@ -1,0 +1,46 @@
+--- /home/laptop/Documents/Codex/2026-11-03/ho/work/coreprime-xnu-loader/session4-before/sleh.c.before-crypto-emul	2026-11-03 17:57:19.152844350 -0500
++++ /home/laptop/Documents/Codex/2026-11-03/ho/work/hakios/xnu-src/xnu-8796.121.2/osfmk/arm64/sleh.c	2026-11-03 17:57:45.710247780 -0500
+@@ -873,6 +873,33 @@
+ #endif
+ }
+ 
++#include <arm64/coreprime_crypto_emul.h>
++
++/*
++ * Core Prime: the MSM8916 Cortex-A53 has no Crypto Extension (ID_AA64ISAR0_EL1
++ * AES/SHA1/SHA2 = 0) but Apple arm64 userland uses it unconditionally. Execute
++ * those EL0 instructions in software on the saved V registers (spilled to the
++ * PCB on exception entry and reloaded on return), then step over them.
++ */
++static uint64_t coreprime_crypto_emulated;
++
++static bool
++coreprime_emulate_user_crypto(arm_saved_state_t *state, uint32_t instr)
++{
++	arm_neon_saved_state_t *ns = get_user_neon_regs(current_thread());
++
++	if (ns == NULL || !is_neon_saved_state64(ns) ||
++	    !coreprime_crypto_emulate(instr, (cp_v128 *)neon_state64(ns)->v.q)) {
++		return false;
++	}
++	if (os_atomic_inc_orig(&coreprime_crypto_emulated, relaxed) == 0) {
++		printf("crypto-emul: first EL0 crypto instruction 0x%08x at pc=0x%llx emulated\n",
++		    instr, get_saved_state_pc(state));
++	}
++	add_saved_state_pc(state, 4);
++	return true;
++}
++
+ /*
+  * Uncategorized exceptions are a catch-all for general execution errors.
+  * ARM64_TODO: For now, we assume this is for undefined instruction exceptions.
+@@ -886,6 +913,9 @@
+ 	uint32_t                   instr     = 0;
+ 
+ 	COPYIN(get_saved_state_pc(state), (char *)&instr, sizeof(instr));
++	if (PSR64_IS_USER64(get_saved_state_cpsr(state)) && coreprime_emulate_user_crypto(state, instr)) {
++		return;
++	}
+ 	{ int fault_log = 0;
+ 	  if (PE_parse_boot_argn("user_fault_log", &fault_log, sizeof(fault_log)) && fault_log)
+ 	    printf("user-instruction-fault: %s pc=0x%llx lr=0x%llx instruction=0x%08x\n",

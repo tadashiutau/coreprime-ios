@@ -1,0 +1,993 @@
+diff --git a/configs/boot-args.lst b/configs/boot-args.lst
+index 7af859d..9108c93 100644
+--- a/configs/boot-args.lst
++++ b/configs/boot-args.lst
+@@ -231,6 +231,9 @@ return_cpu	k
+ return_panic	k
+ root_apfs	u
+ sb_delay	u
++sdmmc	k
++sdmmc_sectors	k
++sdmmc_start	k
+ serial	l
+ small_cores	k
+ small_cores_after	k
+diff --git a/configs/symbols.tsv b/configs/symbols.tsv
+index 31ed41b..ef08922 100644
+--- a/configs/symbols.tsv
++++ b/configs/symbols.tsv
+@@ -209,6 +209,9 @@ REGTRACE	arg	regtrace	CPU, memory and boot	k	(patch)
+ RETURN_CPU	arg	return_cpu	CPU, memory and boot	k	loader_return.c	
+ RETURN_PANIC	arg	return_panic	CPU, memory and boot	k	loader_return.c	
+ ROOT_APFS	arg	root_apfs	User space	u	init.c	the root is to be the Darwin root volume on /dev/DEV -- the phone's flash, read only
++SDMMC	arg	sdmmc	Storage and APFS	k	hakios.virtio_blk.c	
++SDMMC_SECTORS	arg	sdmmc_sectors	Storage and APFS	k	hakios.virtio_blk.c	
++SDMMC_START	arg	sdmmc_start	Storage and APFS	k	hakios.virtio_blk.c	
+ SERIAL	arg	serial	Loader	l	loader.c	
+ SMALL_CORES	arg	small_cores	CPU, memory and boot	k	(patch)	
+ SMALL_CORES_AFTER	arg	small_cores_after	CPU, memory and boot	k	GenericARMPE.cpp	
+diff --git a/docs/boot-args.md b/docs/boot-args.md
+index 16bc0fd..7b6b688 100644
+--- a/docs/boot-args.md
++++ b/docs/boot-args.md
+@@ -2,7 +2,7 @@
+ 
+ Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
+ 
+-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **339 arguments**: 276 read by the kernel, 14 by the loader, 59 by user space (one is read in more than one place).
++Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **342 arguments**: 279 read by the kernel, 14 by the loader, 59 by user space (one is read in more than one place).
+ 
+ This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list.
+ 
+@@ -258,7 +258,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
+ | `touchscreen` | K | `hakios.buttons.c`, `hakios.goodix.c` | `CONFIG_TOUCHSCREEN` |  |
+ | `virtio_input` | K | `hakios.virtio_input.c` | `CONFIG_VIRTIO_INPUT` |  |
+ 
+-## Storage and APFS (43)
++## Storage and APFS (46)
+ 
+ | Argument | Layer | Read by | Configuration | Set by |
+ |---|---|---|---|---|
+@@ -291,6 +291,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
+ | `apfs_write_byte` | K | `hakios.apfs_check.c` | `CONFIG_APFS_WRITE_BYTE` |  |
+ | `apfs_write_len` | K | `hakios.apfs_check.c` | `CONFIG_APFS_WRITE_LEN` |  |
+ | `apfs_write_path` | K | `hakios.apfs_check.c` | `CONFIG_APFS_WRITE_PATH` |  |
++| `sdmmc` | K | `hakios.virtio_blk.c` | `CONFIG_SDMMC` |  |
++| `sdmmc_sectors` | K | `hakios.virtio_blk.c` | `CONFIG_SDMMC_SECTORS` |  |
++| `sdmmc_start` | K | `hakios.virtio_blk.c` | `CONFIG_SDMMC_START` |  |
+ | `ufs_bench` | K | `hakios.ufs.c` | `CONFIG_UFS_BENCH` |  |
+ | `ufs_check` | K | `hakios.ufs.c` | `CONFIG_UFS_CHECK` |  |
+ | `ufs_native` | KL | `hakios.ufs.c`, `loader.c` | `CONFIG_UFS_NATIVE` |  |
+diff --git a/drivers/input/conf b/drivers/input/conf
+index 63d10a4..d68896b 100644
+--- a/drivers/input/conf
++++ b/drivers/input/conf
+@@ -17,3 +17,6 @@ driver GOODIX
+ driver BUTTONS
+ 	file    bsd/dev/hakios.buttons.c
+ 	help    the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1)
++
++standard bsd/dev/hakios.coreprime_input.c
++	help    the Samsung Galaxy Core Prime's IST30xx touch screen (I2C, BLSP1 QUP5) and its home and volume-up keys (coreprime_input=1)
+diff --git a/drivers/input/hakios.input.c b/drivers/input/hakios.input.c
+index 8e5e556..b2f9403 100644
+--- a/drivers/input/hakios.input.c
++++ b/drivers/input/hakios.input.c
+@@ -228,6 +228,7 @@ hakios_input_init(void)
+ 	hakios_cpufreq_init();
+ 	hakios_virtio_input_init();
+ 	hakios_goodix_init();
++	hakios_coreprime_input_init();
+ 	hakios_buttons_init();
+ 	hakios_battery_init();
+ 	hakios_ufs_init();
+diff --git a/drivers/storage/conf b/drivers/storage/conf
+index 7197573..b178f7c 100644
+--- a/drivers/storage/conf
++++ b/drivers/storage/conf
+@@ -20,4 +20,4 @@ driver UFS
+ 
+ driver VIRTIO_BLK
+ 	file    bsd/dev/hakios.virtio_blk.c
+-	help    a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only
++	help    a disk image of the host as /dev/rvblk0 (virtio_blk=1), or retained-state MSM8916 microSD as /dev/sdblk0 (sdmmc=1, read only)
+diff --git a/drivers/storage/hakios.virtio_blk.c b/drivers/storage/hakios.virtio_blk.c
+index 01a7c6f..5383230 100644
+--- a/drivers/storage/hakios.virtio_blk.c
++++ b/drivers/storage/hakios.virtio_blk.c
+@@ -31,11 +31,13 @@
+ #include <mach/vm_param.h>
+ #include <miscfs/devfs/devfs.h>
+ #include <pexpert/pexpert.h>
++#include <pexpert/device_tree.h>
+ #include <sys/buf.h>
+ #include <sys/conf.h>
+ #include <sys/disk.h>
+ #include <sys/errno.h>
+ #include <sys/systm.h>
++#include <sys/uio.h>
+ #include <sys/hakios.virtio_blk.h>
+ #include <vm/vm_kern.h>
+ 
+@@ -140,6 +142,8 @@ struct blk_device {
+ static LCK_GRP_DECLARE(blk_lck_grp, "hakios-virtio-blk");
+ static struct blk_device blk_dev;
+ static bool blk_ready;
++static bool blk_sdmmc;
++static uint64_t blk_sd_start;
+ static bool blk_writable;               /* virtio_blk=2 */
+ static int blk_bmajor = -1, blk_cmajor = -1;
+ 
+@@ -170,6 +174,112 @@ reg_write64(struct blk_device *d, uint32_t reg, uint64_t value)
+ 	reg_write(d, reg + 4, (uint32_t)(value >> 32));
+ }
+ 
++/* Experimental retained-state MSM8916 microSD backend. The bootloader must
++ * leave slot 2 selected and powered. Read-only PIO, single outstanding request;
++ * no media write/erase commands, DMA, IRQ ownership, or power-management support.
++ * Shares this file's BSD block-device glue with virtio, not its transport. */
++static int
++sd_wait(struct blk_device *d, uint32_t off, uint32_t mask, uint32_t want)
++{
++ uint64_t deadline;clock_interval_to_deadline(1,NSEC_PER_SEC,&deadline);
++ while((reg_read(d,off)&mask)!=want) {
++  if(mach_absolute_time()>deadline)return EIO;
++  delay(1);
++ }
++ return 0;
++}
++static void sd_write16(struct blk_device *d,uint32_t off,uint16_t value)
++{
++ *(volatile uint16_t *)(d->regs+off)=value;__builtin_arm_dmb(0xb);
++}
++static int
++sd_sector(struct blk_device *d,uint32_t lba,uint8_t *dst)
++{
++ if(sd_wait(d,0x24,3,0))return EIO;
++ *(volatile uint8_t *)(d->regs+0x2e)=0xe;
++ reg_write(d,0x30,0xffffffff);
++ sd_write16(d,4,512);sd_write16(d,6,1);
++ reg_write(d,8,lba);sd_write16(d,0xc,0x10);sd_write16(d,0xe,0x113a);
++ uint64_t deadline;uint32_t status;
++ clock_interval_to_deadline(1,NSEC_PER_SEC,&deadline);
++ do {
++  status=reg_read(d,0x30);
++  if(status&0xffff8000)return EIO;
++  if(mach_absolute_time()>deadline)return EIO;
++ }while(!(status&0x20));
++ for(unsigned i=0;i<128;i++){uint32_t value=reg_read(d,0x20);bcopy(&value,dst+4*i,4);}
++ reg_write(d,0x30,0x20);
++ if(sd_wait(d,0x30,2,2))return EIO;
++ reg_write(d,0x30,0xffffffff);
++ return 0;
++}
++/*
++ * Several sectors with one CMD18 (READ_MULTIPLE_BLOCK): block count enabled, the controller
++ * itself sends CMD12 after the last block (auto CMD12), PIO through the buffer port, one block
++ * per buffer-read-ready. Card access latency is paid once per request instead of per sector.
++ */
++static bool blk_sd_multi = true;        /* off for good after the first multi-block failure */
++static int
++sd_sectors(struct blk_device *d,uint32_t lba,uint32_t count,uint8_t *dst)
++{
++ if(count==1)return sd_sector(d,lba,dst);
++ if(sd_wait(d,0x24,3,0))return EIO;
++ *(volatile uint8_t *)(d->regs+0x2e)=0xe;
++ reg_write(d,0x30,0xffffffff);
++ sd_write16(d,4,512);sd_write16(d,6,(uint16_t)count);
++ reg_write(d,8,lba);sd_write16(d,0xc,0x36);sd_write16(d,0xe,0x123a);
++ uint64_t deadline;uint32_t status;
++ for(uint32_t b=0;b<count;b++) {
++  clock_interval_to_deadline(1,NSEC_PER_SEC,&deadline);
++  do {
++   status=reg_read(d,0x30);
++   if(status&0xffff8000)return EIO;
++   if(mach_absolute_time()>deadline)return EIO;
++  }while(!(status&0x20));
++  reg_write(d,0x30,0x20);
++  uint32_t *out=(uint32_t *)(void *)(dst+512*b);
++  for(unsigned i=0;i<128;i++){uint32_t value=reg_read(d,0x20);bcopy(&value,out+i,4);}
++ }
++ if(sd_wait(d,0x30,2,2))return EIO;
++ status=reg_read(d,0x30);
++ reg_write(d,0x30,0xffffffff);
++ return (status&0xffff8000)?EIO:0;
++}
++/* After a failed multi-block read: reset the command and data lines, stop the card's transfer (CMD12, R1b). */
++static void
++sd_abort(struct blk_device *d)
++{
++ *(volatile uint8_t *)(d->regs+0x2f)=0x06;__builtin_arm_dmb(0xb);
++ (void)sd_wait(d,0x2f,0x06,0);
++ reg_write(d,0x30,0xffffffff);
++ if(sd_wait(d,0x24,1,0)==0){reg_write(d,8,0);sd_write16(d,0xc,0);sd_write16(d,0xe,0x0cdb);
++  (void)sd_wait(d,0x30,1,1);(void)sd_wait(d,0x24,2,0);}
++ reg_write(d,0x30,0xffffffff);
++}
++static int
++sd_io(struct blk_device *d,bool write,uint64_t offset,void *data,size_t len)
++{
++ if(write)return EROFS;
++ if((offset&511)||(len&511)||len>BLK_MAX_XFER || offset/512>d->capacity ||
++    len/512>d->capacity-offset/512)return EINVAL;
++ int error=0;lck_mtx_lock(&d->lock);
++ if(!blk_ready)error=ENXIO;
++ uint32_t lba=(uint32_t)(blk_sd_start+offset/512);
++ if(!error && blk_sd_multi && len>512) {
++  error=sd_sectors(d,lba,(uint32_t)(len/512),(uint8_t*)data);
++  if(error) {
++   printf("sdmmc: multi-block read at byte %llu failed; single sectors from now on\n",offset);
++   blk_sd_multi=false;sd_abort(d);error=0;
++  } else {
++   lck_mtx_unlock(&d->lock);return 0;
++  }
++ }
++ for(size_t done=0;!error&&done<len;done+=512)
++  error=sd_sector(d,(uint32_t)(blk_sd_start+(offset+done)/512),(uint8_t*)data+done);
++ if(error){blk_ready=false;printf("sdmmc: read failed at byte %llu; device disabled\n",offset);}
++ lck_mtx_unlock(&d->lock);return error;
++}
++
+ /*
+  * One read, or one write.  The device works on the driver's own wired pages (d->bounce), and `data` is copied in or
+  * out: a file system's buffer is not always memory whose physical address kvtophys() can give (a write after a
+@@ -178,6 +288,7 @@ reg_write64(struct blk_device *d, uint32_t reg, uint64_t value)
+ static int
+ blk_io(struct blk_device *d, bool write, uint64_t offset, void *data, size_t len)
+ {
++	if(blk_sdmmc)return sd_io(d,write,offset,data,len);
+ 	uint16_t idx = 0;
+ 	size_t done = 0;
+ 	uint64_t deadline;
+@@ -414,7 +525,22 @@ blk_dev_size(dev_t dev)
+ static int
+ blk_dev_read(__unused dev_t dev, struct uio *uio, __unused int ioflag)
+ {
+-	/* the character device is here so that tools can see the disk; reads go by buffer */
++	/* physio can expose a user VA directly in buf_map(); PIO must never write it.
++  * Stage raw SD reads in kernel memory and let uiomove handle the user copy. */
++ if(blk_sdmmc) {
++  uint8_t sector[512];
++  while(uio_resid(uio)>0) {
++   off_t off=uio_offset(uio);if(off<0)return EINVAL;
++   if((uint64_t)off>=blk_dev.capacity*512)return 0;
++   int error=blk_io(&blk_dev,false,(uint64_t)off&~511ULL,sector,512);
++   if(error)return error;
++   unsigned within=(unsigned)off&511;
++   int amount=(int)MIN((uint64_t)uio_resid(uio),512-within);
++   if((error=uiomove((char*)sector+within,amount,uio)))return error;
++  }
++  return 0;
++ }
++ /* virtio's existing buffered path */
+ 	return physio(blk_dev_strategy, NULL, dev, B_READ, (u_int (*)(buf_t))blk_dev_size,
+ 	    uio, VIRTIO_BLK_SECTOR);
+ }
+@@ -517,6 +643,66 @@ blk_attach(struct blk_device *d, int slot)
+ 	return true;
+ }
+ 
++static void
++sd_init(void)
++{
++ DTEntry entry;const void *type;unsigned size;
++ uint64_t sectors=0;
++ if(SecureDTLookupEntry(NULL,"/arm-io",&entry)!=kSuccess ||
++    SecureDTGetProperty(entry,"device_type",&type,&size)!=kSuccess ||
++    size!=8 || memcmp(type,"msm8916",8)!=0) {
++  printf("sdmmc: refusing non-MSM8916 device tree\n");return;
++ }
++ /* Explicit bound from the current card's MBR; do not invent its capacity. */
++ if(!PE_parse_boot_argn("sdmmc_sectors",&sectors,sizeof(sectors)) ||
++    !sectors || sectors>0xffffffffULL){printf("sdmmc: missing valid sector bound\n");return;}
++ PE_parse_boot_argn("sdmmc_start",&blk_sd_start,sizeof(blk_sd_start));
++ if(blk_sd_start>0xffffffffULL || sectors>0x100000000ULL-blk_sd_start)return;
++ struct blk_device *d=&blk_dev;
++ d->regs=ml_io_map(0x07864900,0x1000);d->capacity=sectors;
++ if(!(reg_read(d,0x28)&0x100) || !(reg_read(d,0x2c)&4)) {
++  printf("sdmmc: slot 2 not powered/clocked by bootloader\n");return;
++ }
++ reg_write(d,0x38,0);reg_write(d,0x34,0xffffffff);
++ uint8_t sector[512];
++ if(sd_sector(d,(uint32_t)blk_sd_start,sector)){printf("sdmmc: initial sector read failed\n");return;}
++ uint64_t hash=14695981039346656037ULL;
++ for(unsigned i=0;i<512;i++){hash^=sector[i];hash*=1099511628211ULL;}
++ printf("sdmmc: slot 2 view LBA0 FNV %llx, MBR %02x%02x\n",hash,sector[510],sector[511]);
++ printf("sdmmc: host control 0x%02x (4-bit bus %s), clock control 0x%04x, host version 0x%04x\n",
++  reg_read(d,0x28)&0xff,(reg_read(d,0x28)&2)?"yes":"no",reg_read(d,0x2c)&0xffff,reg_read(d,0xfc)>>16);
++ {
++  /* the same 2 MB both ways: speeds, and that the data agree */
++  uint8_t *buf=(uint8_t *)kalloc_data(BLK_MAX_XFER,Z_WAITOK);
++  if(buf) {
++   uint64_t h1=14695981039346656037ULL,h2=h1,t0,t1,t2;int e1=0,e2=0;
++   t0=mach_absolute_time();
++   for(uint32_t c=0;c<32&&!e1;c++)for(uint32_t k=0;k<128&&!e1;k++){
++    e1=sd_sector(d,(uint32_t)blk_sd_start+c*128+k,buf+512*k);
++    for(unsigned i=0;i<512;i++){h1^=buf[512*k+i];h1*=1099511628211ULL;}}
++   t1=mach_absolute_time();
++   for(uint32_t c=0;c<32&&!e2;c++){
++    e2=sd_sectors(d,(uint32_t)blk_sd_start+c*128,128,buf);
++    for(unsigned i=0;i<BLK_MAX_XFER&&!e2;i++){h2^=buf[i];h2*=1099511628211ULL;}}
++   t2=mach_absolute_time();
++   uint64_t ns1,ns2;absolutetime_to_nanoseconds(t1-t0,&ns1);absolutetime_to_nanoseconds(t2-t1,&ns2);
++   printf("sdmmc: 2 MB by single sectors %llu ms (err %d, FNV %llx); by 64 KB multi-block %llu ms (err %d, FNV %llx): %s\n",
++    ns1/1000000,e1,h1,ns2/1000000,e2,h2,(!e1&&!e2&&h1==h2)?"same data":"MISMATCH or error: multi-block off");
++   if(e2||e1||h1!=h2){blk_sd_multi=false;if(e2)sd_abort(d);}
++   kfree_data(buf,BLK_MAX_XFER);
++  }
++ }
++ lck_mtx_init(&d->lock,&blk_lck_grp,LCK_ATTR_NULL);
++ blk_bmajor=bdevsw_add(-1,&blk_bdevsw);
++ if(blk_bmajor<0)return;
++ blk_cmajor=cdevsw_add_with_bdev(-1,&blk_cdevsw,blk_bmajor);
++ if(blk_cmajor<0)return;
++ if(!devfs_make_node(makedev(blk_bmajor,0),DEVFS_BLOCK,UID_ROOT,GID_OPERATOR,0600,"sdblk0") ||
++    !devfs_make_node(makedev(blk_cmajor,0),DEVFS_CHAR,UID_ROOT,GID_OPERATOR,0600,"rsdblk0"))return;
++ blk_sdmmc=true;blk_writable=false;blk_ready=true;
++ printf("sdmmc: /dev/sdblk0 and /dev/rsdblk0, %llu sectors, read only\n",sectors);
++}
++
+ void
+ hakios_virtio_blk_init(void)
+ {
+@@ -525,6 +711,7 @@ hakios_virtio_blk_init(void)
+ 	struct blk_device *d = &blk_dev;
+ 	int slot;
+ 
++	if(PE_parse_boot_argn("sdmmc",&enabled,sizeof(enabled)) && enabled==1){sd_init();return;}
+ 	if (!PE_parse_boot_argn("virtio_blk", &enabled, sizeof(enabled)) || !enabled) {
+ 		return;
+ 	}
+diff --git a/qemu/run.sh b/qemu/run.sh
+index c05e8a0..ddd23d4 100755
+--- a/qemu/run.sh
++++ b/qemu/run.sh
+@@ -29,12 +29,13 @@ mkdir -p esp/EFI/BOOT && cp -u $L esp/EFI/BOOT/BOOTAA64.EFI
+ # device puts it in memory at 0xF0000000, as the boot shim does behind Project Silicium's image on the phone.
+ # With QEMU_ESP=1 it is not put anywhere: it is the file \EFI\hakios\payload.bin of the ESP, and the loader reads it
+ # itself from the volume it was started from -- UEFI-native boot, what a boot menu or a USB stick does (docs/uefi-boot.md).
+-PAYLOAD_DEVICE=(-device loader,file=payload.bin,addr=0xF0000000,force-raw=on)
++# Match xnuloader/build.sh's PAYLOAD_BASE when testing a smaller RAM map.
++PAYLOAD_DEVICE=(-device loader,file=payload.bin,addr=${QEMU_PAYLOAD_ADDR:-0xF0000000},force-raw=on)
+ if [ -n "${QEMU_ESP:-}" ]; then
+ 	mkdir -p esp/EFI/hakios && cp payload.bin esp/EFI/hakios/payload.bin
+ 	PAYLOAD_DEVICE=()
+ fi
+-timeout "$T" qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a76 -smp ${QEMU_SMP:-1} -m ${QEMU_MEM:-6G} \
++timeout "$T" qemu-system-aarch64 -M virt,gic-version=${QEMU_GIC_VERSION:-3} -cpu ${QEMU_CPU:-cortex-a76} -smp ${QEMU_SMP:-1} -m ${QEMU_MEM:-6G} \
+   -accel tcg,tb-size=${QEMU_TB_MB:-384} \
+   -drive if=pflash,format=raw,readonly=on,file="$EFI" \
+   -drive if=pflash,format=raw,file=vars.fd \
+diff --git a/xnu/files/bsd/miscfs/ramfs/ramfs.c b/xnu/files/bsd/miscfs/ramfs/ramfs.c
+index bba5dd1..c411b66 100644
+--- a/xnu/files/bsd/miscfs/ramfs/ramfs.c
++++ b/xnu/files/bsd/miscfs/ramfs/ramfs.c
+@@ -46,6 +46,7 @@
+ #include <uuid/uuid.h>
+ #include <vfs/vfs_support.h>
+ #include <vm/vm_kern.h>
++#include <pexpert/pexpert.h>
+ 
+ #define RAMFS_MAX_NAME          255
+ #define RAMFS_MAX_XATTR         (16u * 1024 * 1024)
+@@ -1729,6 +1730,20 @@ ramfs_mount(mount_t mp, __unused vnode_t devvp, __unused user_addr_t data, __unu
+ 	rm->rm_next_ino = RAMFS_ROOT_INO + 1;
+ 	/* a runaway writer must not be able to take the whole machine: a quarter of memory at most */
+ 	rm->rm_max_pages = (max_mem / 4) / PAGE_SIZE;
++	/*
++	 * Boot-arg ramfs_mb=N: that many MB instead, up to half of memory. On a phone with half a GB (the
++	 * Galaxy Core Prime) a quarter is 128 MB, and Darwin's /private/var outgrows it during SpringBoard's
++	 * first start (No space left on device; SpringBoard exits 1 and is relaunched forever).
++	 */
++	{
++		uint32_t mb = 0;
++
++		if (PE_parse_boot_argn("ramfs_mb", &mb, sizeof(mb)) && mb != 0) {
++			uint64_t want = ((uint64_t)mb << 20) / PAGE_SIZE, cap = (max_mem / 2) / PAGE_SIZE;
++
++			rm->rm_max_pages = want < cap ? want : cap;
++		}
++	}
+ 
+ 	rm->rm_hash = kalloc_type(struct ramfs_node *, RAMFS_HASH_SIZE, Z_WAITOK | Z_ZERO | Z_NOFAIL);
+ 	rm->rm_root = ramfs_node_alloc(rm, VDIR, NULL);
+diff --git a/xnu/files/bsd/sys/hakios.input.h b/xnu/files/bsd/sys/hakios.input.h
+index bfb7d63..e0a1de8 100644
+--- a/xnu/files/bsd/sys/hakios.input.h
++++ b/xnu/files/bsd/sys/hakios.input.h
+@@ -42,6 +42,7 @@ void hakios_input_init(void);
+ void hakios_virtio_input_init(void);   /* boot-arg virtio_input=1: QEMU's virtio pointer and keyboard */
+ void hakios_goodix_init(void);         /* boot-arg touchscreen=1: the phone's Goodix or FocalTech touch screen */
+ void hakios_buttons_init(void);        /* boot-arg buttons=1: the phone's power and volume keys */
++void hakios_coreprime_input_init(void); /* boot-arg coreprime_input=1: the Galaxy Core Prime's touch screen and GPIO buttons */
+ void hakios_ufs_init(void);           /* ufs=2 to xnuloader: the phone's storage, read only, through the loader (ufs_shared_pa=) */
+ void hakios_ufs_report(const char *when); /* where reading the storage has spent its time so far */
+ bool hakios_ufs_dev(dev_t dev);           /* one of the storage's devices */
+diff --git a/xnu/files/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/xnu/files/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+index 93d04b5..5536132 100644
+--- a/xnu/files/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/xnu/files/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -111,6 +111,12 @@ static TUNABLE(uint32_t, gFBHeight, "fbheight", kFBDefaultHeight);
+ #define kFBPointsHigh           812
+ #define kFBDefaultScale         3
+ static TUNABLE(uint32_t, gFBScale, "fbscale", 0);
++/*
++ * Boot-arg fb_aspect=1: keep the picture's proportions on a panel of another shape -- the iPhone's tall
++ * screen at the panel's full height, centred, black on either side -- instead of stretching it to fill
++ * the panel (the Galaxy Core Prime's 480 x 800 is much wider than the iPhone's 9 : 19.5).
++ */
++static TUNABLE(uint32_t, gFBAspect, "fb_aspect", 0);
+ /* Boot-arg fbtrace=N: log the first N calls of every selector (default 3). */
+ static TUNABLE(uint32_t, gFBTrace, "fbtrace", 3);
+ 
+@@ -295,6 +301,7 @@ public:
+ 	IOLock *        fLock;
+ 	uint8_t *       fBase;                  /* the boot framebuffer: the panel */
+ 	uint32_t        fPanelWidth, fPanelHeight, fRowBytes;
++	uint32_t        fOutX, fOutWidth;       /* where on the panel the picture goes, across (fb_aspect) */
+ 	uint32_t        fWidth, fHeight;        /* the display as user space sees it */
+ 	MiniIOSurface * fDefaultSurface;
+ 	uint32_t        fSwapID;
+@@ -548,12 +555,22 @@ IOMobileFramebuffer::start(IOService * provider)
+ 			}
+ 		}
+ 	}
++	fOutX = 0;
++	fOutWidth = fPanelWidth;
++	if (gFBAspect != 0 && fHeight != 0) {
++		uint32_t w = (uint32_t) ((uint64_t) fWidth * fPanelHeight / fHeight);
++
++		if (w != 0 && w < fPanelWidth) {
++			fOutWidth = w;
++			fOutX = (fPanelWidth - w) / 2;
++		}
++	}
+ 	fColumn = IONewZero(uint32_t, fPanelWidth);
+ 	fColumnWeight = IONewZero(uint16_t, fPanelWidth);
+ 	fDiff = gDiff != 0;
+ 	fDiffLeft = fDiffTop = ~0u;
+-	IOLog("MiniIOMobileFramebuffer: display %ux%u on a panel of %ux%u (%u bytes per row)\n", fWidth, fHeight,
+-	    fPanelWidth, fPanelHeight, fRowBytes);
++	IOLog("MiniIOMobileFramebuffer: display %ux%u on a panel of %ux%u (%u bytes per row), %u columns from %u\n", fWidth, fHeight,
++	    fPanelWidth, fPanelHeight, fRowBytes, fOutWidth, fOutX);
+ 
+ 	if (gRecSeconds != 0) {
+ 		/* one piece of physical memory: the loader will send it over USB as it lies */
+@@ -887,9 +904,9 @@ IOMobileFramebuffer::drawLayer(MiniIOSurface * s, const int32_t * src, const int
+ 	 * the rectangle on the panel, worked out in 64 bits: the request's numbers are the caller's, and a
+ 	 * rectangle of billions of rows is not drawn (nor looked at row by row)
+ 	 */
+-	int64_t qx0 = (int64_t) dx * fPanelWidth / fWidth;
++	int64_t qx0 = fOutX + (int64_t) dx * fOutWidth / fWidth;
+ 	int64_t qy0 = (int64_t) dy * fPanelHeight / fHeight;
+-	int64_t qx1 = ((int64_t) dx + dw) * fPanelWidth / fWidth;
++	int64_t qx1 = fOutX + ((int64_t) dx + dw) * fOutWidth / fWidth;
+ 	int64_t qy1 = ((int64_t) dy + dh) * fPanelHeight / fHeight;
+ 
+ 	if (qx0 < -DST_LIMIT || qy0 < -DST_LIMIT || qx1 > DST_LIMIT || qy1 > DST_LIMIT) {
+@@ -1257,6 +1274,21 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 				/* the first picture: the kernel's text console must stop drawing over it */
+ 				fGraphics = true;
+ 				PE_initialize_console(NULL, kPEGraphicsMode);
++				/*
++				 * A console that was drawing text before (a loader that leaves the boot
++				 * framebuffer in text mode, as the Galaxy Core Prime's does) is not stopped by
++				 * that: it keeps writing over the picture. Give it memory of its own instead,
++				 * of the same shape, where nobody looks.
++				 */
++				{
++					size_t bytes = (size_t) fRowBytes * fPanelHeight;
++					void * shadow = IOMallocData(bytes);
++
++					if (shadow != NULL) {
++						bzero(shadow, bytes);
++						vinfo.v_baseaddr = (unsigned long) shadow;
++					}
++				}
+ 			}
+ 			drawLayer(s, src, dst);
+ 			if (layer == 0) {
+@@ -1589,7 +1621,14 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 	case kFBMethodSwapSignal:
+ 	case kFBMethodSwapCancel:
+ 	case kFBMethodSwapCancelAll:
+-	case kFBMethodRequestPowerChange:
++	case kFBMethodRequestPowerChange:               /* in: 1 on, 0 off */
++		/* no backlight of ours to switch: "off" is a black panel until the next frame */
++		if (args->scalarInputCount > 0 && in[0] == 0 && fOwner->fBase != NULL) {
++			for (uint32_t y = 0; y < fOwner->fPanelHeight; y++) {
++				bzero(fOwner->fBase + (size_t) y * fOwner->fRowBytes, (size_t) fOwner->fPanelWidth * 4);
++			}
++		}
++		return kIOReturnSuccess;
+ 	case kFBMethodChangeFrameInfo:
+ 		return kIOReturnSuccess;
+ 
+diff --git a/xnu/files/osfmk/arm64/gic_v3_irq.c b/xnu/files/osfmk/arm64/gic_v3_irq.c
+index 63ffd4b..8cc517b 100644
+--- a/xnu/files/osfmk/arm64/gic_v3_irq.c
++++ b/xnu/files/osfmk/arm64/gic_v3_irq.c
+@@ -54,6 +54,13 @@
+ #define GICD_ICFGR(n)           (0x0c00 + 4 * (n))
+ #define GICD_IGRPMODR(n)        (0x0d00 + 4 * (n))
+ #define GICD_IROUTER(n)         (0x6000 + 8 * (n))
++#define GICD_ITARGETSR(n)       (0x0800 + (n))
++#define GICD_SGIR              0x0f00
++#define GICC_CTLR              0x0000
++#define GICC_PMR               0x0004
++#define GICC_BPR               0x0008
++#define GICC_IAR               0x000c
++#define GICC_EOIR              0x0010
+ 
+ #define GICR_FRAME_SIZE         0x20000     /* RD_base + SGI_base per CPU */
+ #define GICR_TYPER              0x0008
+@@ -72,7 +79,7 @@
+ 
+ #define GIC_SGI_SIGNAL          0           /* cpu_signal(): another processor wants this one's attention */
+ #define GIC_SGI_STOP            1           /* psci_smp_stop_here(): the system is going back to the boot loader */
+-#define GIC_INTID_VTIMER        27          /* EL1 virtual timer PPI */
++#define GIC_INTID_VTIMER_DEFAULT 27         /* QEMU; physical boards supply virtual-timer-intid */
+ #define GIC_INTID_SPI_MIN       32
+ #define GIC_INTID_SPURIOUS_MIN  1020
+ #define GIC_SPI_MOST            48          /* attached at a time */
+@@ -80,6 +87,9 @@
+ 
+ static vm_offset_t gicd_base, gicr_base;
+ static vm_size_t   gicr_size;
++/* For v2 the second DT range is the banked MMIO CPU interface, not a redistributor. */
++static bool gic_v2;
++static uint32_t gic_vtimer_intid = GIC_INTID_VTIMER_DEFAULT;
+ static vm_offset_t gicr_cpu_base[MAX_CPUS]; /* each processor's redistributor frame */
+ 
+ /*
+@@ -135,7 +145,7 @@ gic_write32(vm_offset_t addr, uint32_t value)
+ static void
+ gic_mask(uint32_t intid)
+ {
+-	if (intid < 32) {
++	if (intid < 32 && !gic_v2) {
+ 		gic_write32(gicr_cpu_base[cpu_number()] + GICR_ICENABLER0, 1u << intid);
+ 	} else {
+ 		gic_write32(gicd_base + GICD_ICENABLER(intid / 32), 1u << (intid % 32));
+@@ -152,6 +162,14 @@ static void
+ gic_send_sgi(uint32_t phys_id, uint32_t sgi)
+ {
+ 	uint64_t aff0 = phys_id & 0xff, aff1 = (phys_id >> 8) & 0xff;
++	if (gic_v2) {
++		if (aff1 != 0 || aff0 >= 8) {
++			panic("gic v2: unsupported SGI destination 0x%x", phys_id);
++		}
++		__builtin_arm_dsb(DSB_SY);
++		gic_write32(gicd_base + GICD_SGIR, (1u << (16 + aff0)) | sgi);
++		return;
++	}
+ 
+ 	__builtin_arm_wsr64("ICC_SGI1R_EL1", ((uint64_t)sgi << 24) | (aff1 << 16) | (1ULL << (aff0 & 15)));
+ 	__builtin_arm_isb(ISB_SY);
+@@ -193,6 +211,10 @@ gic_spi_handle(uint32_t intid)
+ static void
+ gic_distributor_settle(void)
+ {
++	if (gic_v2) {
++		__builtin_arm_dsb(DSB_SY);
++		return;
++	}
+ 	while (gic_read32(gicd_base + GICD_CTLR) & GICD_CTLR_RWP) {
+ 		/* wait for the change to take effect */
+ 	}
+@@ -255,12 +277,23 @@ gic_v3_spi_attach(uint32_t intid, bool edge, void (*handler)(void *context, uint
+ 	gic_write32(gicd_base + GICD_ICPENDR(intid / 32), 1u << (intid % 32));
+ 	gic_write32(gicd_base + GICD_ICACTIVER(intid / 32), 1u << (intid % 32));
+ 	gic_write32(gicd_base + GICD_IGROUPR(intid / 32), gic_read32(gicd_base + GICD_IGROUPR(intid / 32)) | 1u << (intid % 32));
+-	gic_write32(gicd_base + GICD_IGRPMODR(intid / 32), gic_read32(gicd_base + GICD_IGRPMODR(intid / 32)) & ~(1u << (intid % 32)));
++	if (!gic_v2) {
++		gic_write32(gicd_base + GICD_IGRPMODR(intid / 32), gic_read32(gicd_base + GICD_IGRPMODR(intid / 32)) & ~(1u << (intid % 32)));
++	}
+ 	*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(intid)) = GIC_PRIORITY_DEFAULT;
+ 	config = gic_read32(gicd_base + GICD_ICFGR(intid / 16)) & ~(3u << (intid % 16 * 2));
+ 	gic_write32(gicd_base + GICD_ICFGR(intid / 16), config | (edge ? 2u : 0u) << (intid % 16 * 2));
+ 	/* GICD_IROUTER: Aff3 in [39:32], Aff2.Aff1.Aff0 in [23:0]; bit 31 (any processor) clear */
+-	*(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
++	if (gic_v2) {
++		/* ITARGETSR0 is banked and identifies the CPU executing this attachment. */
++		uint8_t target = *(volatile uint8_t *)(gicd_base + GICD_ITARGETSR(0));
++		if (!target) {
++			panic("gic v2: no CPU target mask");
++		}
++		*(volatile uint8_t *)(gicd_base + GICD_ITARGETSR(intid)) = target;
++	} else {
++		*(volatile uint64_t *)(gicd_base + GICD_IROUTER(intid)) = (mpidr & 0xff00000000ull) | (mpidr & 0xffffff);
++	}
+ 	gic_distributor_settle();
+ 	gic_v3_spi_unmask(intid);
+ 	return KERN_SUCCESS;
+@@ -296,21 +329,32 @@ gic_v3_spi_count(uint32_t intid)
+ 	return 0;
+ }
+ 
++static void
++gic_end_interrupt(uint64_t iar)
++{
++	if (gic_v2) {
++		gic_write32(gicr_base + GICC_EOIR, (uint32_t)iar);
++	} else {
++		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
++	}
++	__builtin_arm_isb(ISB_SY);
++}
++
+ static void
+ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub, __unused int source)
+ {
+ 	int cpu = cpu_number();
+ 
+ 	for (;;) {
+-		uint64_t iar = __builtin_arm_rsr64("ICC_IAR1_EL1");
+-		uint32_t intid = (uint32_t)(iar & 0xffffff);
++		uint64_t iar = gic_v2 ? gic_read32(gicr_base + GICC_IAR) : __builtin_arm_rsr64("ICC_IAR1_EL1");
++		uint32_t intid = (uint32_t)(iar & (gic_v2 ? 0x3ff : 0xffffff));
+ 
+ 		if (intid >= GIC_INTID_SPURIOUS_MIN) {
+ 			break;
+ 		}
+ 		gic_active_iar[cpu] = iar | GIC_IAR_TAKEN;
+ 
+-		if (intid == GIC_INTID_VTIMER) {
++		if (intid == gic_vtimer_intid) {
+ 			/* same sequence as the FIQ path in sleh_fiq() */
+ 			getCpuDatap()->cpu_decrementer = -1; /* Large */
+ 			rtclock_intr(TRUE);
+@@ -328,8 +372,7 @@ gic_irq_handler(__unused void *target, __unused void *refCon, __unused void *nub
+ 			gic_last_unhandled = intid;
+ 		}
+ 
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+-		__builtin_arm_isb(ISB_SY);
++		gic_end_interrupt(iar);
+ 		gic_active_iar[cpu] = 0;
+ 	}
+ }
+@@ -358,8 +401,7 @@ gic_v3_irq_quiesce(void)
+ 		}
+ 	}
+ 	if (gic_active_iar[cpu] != 0) {
+-		__builtin_arm_wsr64("ICC_EOIR1_EL1", gic_active_iar[cpu] & ~GIC_IAR_TAKEN);
+-		__builtin_arm_isb(ISB_SY);
++		gic_end_interrupt(gic_active_iar[cpu] & ~GIC_IAR_TAKEN);
+ 		gic_active_iar[cpu] = 0;
+ 	}
+ }
+@@ -382,6 +424,14 @@ gic_v3_irq_cpu_shutdown(void)
+ 		return;
+ 	}
+ 	gic_v3_irq_quiesce();
++	if (gic_v2) {
++		gic_write32(gicd_base + GICD_ICENABLER(0), 0xffffffffu);
++		gic_write32(gicd_base + GICD_ICPENDR(0), 0xffffffffu);
++		gic_write32(gicd_base + GICD_ICACTIVER(0), 0xffffffffu);
++		gic_write32(gicr_base + GICC_CTLR, 0);
++		__builtin_arm_dsb(DSB_SY);
++		return;
++	}
+ 	gicr = gicr_cpu_base[cpu_number()];
+ 	if (gicr != 0) {
+ 		gic_write32(gicr + GICR_ICENABLER0, 0xffffffffu);
+@@ -418,7 +468,7 @@ gic_v3_irq_cpu_init(void)
+ {
+ 	int cpu = cpu_number();
+ 	vm_offset_t gicr;
+-	uint32_t mine = 1u << GIC_INTID_VTIMER;
++	uint32_t mine;
+ 
+ 	if (gicd_base == 0) {
+ 		DTEntry entry;
+@@ -432,6 +482,22 @@ gic_v3_irq_cpu_init(void)
+ 		}
+ 		uint64_t const *reg = prop;
+ 		vm_offset_t soc_base = pe_arm_get_soc_base_phys();
++		void const *version;
++		unsigned int version_size;
++		gic_v2 = SecureDTGetProperty(entry, "version", &version, &version_size) == kSuccess &&
++		    version_size == sizeof(uint32_t) && *(const uint32_t *)version == 2;
++
++		/* Apple DT properties are native-endian. Linux FDT PPIs must first
++		 * be converted to absolute INTIDs by the boot shim (PPI index + 16). */
++		void const *timer;
++		unsigned int timer_size;
++		if (SecureDTGetProperty(entry, "virtual-timer-intid", &timer, &timer_size) == kSuccess) {
++			if (timer_size != sizeof(uint32_t) || *(const uint32_t *)timer < 16 ||
++			    *(const uint32_t *)timer > 31) {
++				panic("gic: virtual-timer-intid must be a PPI INTID (16..31)");
++			}
++			gic_vtimer_intid = *(const uint32_t *)timer;
++		}
+ 
+ 		simple_lock_init(&gic_spi_lock, 0);
+ 		gicd_base = ml_io_map(soc_base + reg[0], reg[1]);
+@@ -443,6 +509,43 @@ gic_v3_irq_cpu_init(void)
+ 	} else if (gicr_cpu_base[cpu] != 0) {
+ 		return;
+ 	}
++	mine = 1u << gic_vtimer_intid;
++	if (gic_v2) {
++		/* SGI/PPI distributor registers and GICC are banked per CPU in GICv2. */
++		gicr_cpu_base[cpu] = gicr_base;
++		if (ml_get_cpu_count() > 1) {
++			mine |= (1u << GIC_SGI_SIGNAL) | (1u << GIC_SGI_STOP);
++		}
++		gic_write32(gicr_base + GICC_CTLR, 0);
++		gic_write32(gicd_base + GICD_ICENABLER(0), 0xffffffffu);
++		gic_write32(gicd_base + GICD_ICPENDR(0), mine);
++		gic_write32(gicd_base + GICD_ICACTIVER(0), mine);
++		gic_write32(gicd_base + GICD_IGROUPR(0), gic_read32(gicd_base + GICD_IGROUPR(0)) | mine);
++		for (unsigned n = 0; n < 32; n++) {
++			if (mine & (1u << n)) {
++				*(volatile uint8_t *)(gicd_base + GICD_IPRIORITYR(n)) = GIC_PRIORITY_DEFAULT;
++			}
++		}
++		gic_write32(gicr_base + GICC_PMR, 0xff);
++		gic_write32(gicr_base + GICC_BPR, 0);
++		/*
++		 * NS aliases expose only Group 1 as bit 0. A view exposing both groups
++		 * needs both enables and AckCtl to acknowledge Group 1 through GICC_IAR.
++		 * Reserved enable bits read back as zero in the NS alias.
++		 */
++		gic_write32(gicd_base + GICD_CTLR, gic_read32(gicd_base + GICD_CTLR) | 3);
++		gic_write32(gicd_base + GICD_ISENABLER(0), mine);
++		gic_write32(gicr_base + GICC_CTLR, 3);
++		if (gic_read32(gicr_base + GICC_CTLR) & 2) {
++			gic_write32(gicr_base + GICC_CTLR, 7);
++		}
++		__builtin_arm_dsb(DSB_SY);
++		__builtin_arm_isb(ISB_SY);
++		ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
++		kprintf("gic: v2, distributor %p, cpu %d interface %p, virtual timer PPI %d\n",
++		    (void *)gicd_base, cpu, (void *)gicr_base, gic_vtimer_intid);
++		return;
++	}
+ 
+ 	/* System-register CPU interface */
+ 	__builtin_arm_wsr64("ICC_SRE_EL1", __builtin_arm_rsr64("ICC_SRE_EL1") | 1);
+@@ -476,7 +579,7 @@ gic_v3_irq_cpu_init(void)
+ 	/* Virtual timer PPI (and those): Group 1 (IRQ), default priority, enabled */
+ 	gic_write32(gicr + GICR_IGROUPR0, gic_read32(gicr + GICR_IGROUPR0) | mine);
+ 	gic_write32(gicr + GICR_IGRPMODR0, gic_read32(gicr + GICR_IGRPMODR0) & ~mine);
+-	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(GIC_INTID_VTIMER)) = GIC_PRIORITY_DEFAULT;
++	*(volatile uint8_t *)(gicr + GICR_IPRIORITYR(gic_vtimer_intid)) = GIC_PRIORITY_DEFAULT;
+ 	gic_write32(gicr + GICR_ISENABLER0, mine);
+ 
+ 	/* Distributor: affinity routing, Group 1 enabled (normally already so) */
+@@ -502,7 +605,7 @@ gic_v3_irq_cpu_init(void)
+ 
+ 	ml_install_interrupt_handler(NULL, 0, NULL, gic_irq_handler, NULL);
+ 	kprintf("gic: v3, distributor %p, cpu %d's redistributor %p, virtual timer on PPI %d\n",
+-	    (void *)gicd_base, cpu, (void *)gicr, GIC_INTID_VTIMER);
++	    (void *)gicd_base, cpu, (void *)gicr, gic_vtimer_intid);
+ }
+ 
+ #endif /* GENERIC_GIC_V3_IRQ */
+diff --git a/xnu/files/osfmk/arm64/psci_smp.c b/xnu/files/osfmk/arm64/psci_smp.c
+index 221defa..93a3049 100644
+--- a/xnu/files/osfmk/arm64/psci_smp.c
++++ b/xnu/files/osfmk/arm64/psci_smp.c
+@@ -83,6 +83,39 @@ static bool     psci_smp_boot_wanted;           /* it was not the boot processor
+ static bool     psci_smp_boot_busy;             /* ... and has begun to */
+ static bool     psci_smp_stopping;              /* every other core switches itself off */
+ 
++/*
++ * A board whose firmware has no PSCI (the Galaxy Core Prime's stock TrustZone): lk2nd parks the
++ * cores it can start in a spin-table and says so in the device tree, which the loader passes on as
++ * the cpu node's "cpu-release-addr". Such a core is started by writing the entry point there; it
++ * is never switched off (there is nobody to ask), only parked, and the firmware is never called.
++ */
++static bool psci_smp_spin;              /* some core was started from a spin-table: no PSCI calls */
++
++static uint64_t
++psci_smp_release_addr(uint32_t phys_id)
++{
++	char path[16] = "/cpus/cpu0";
++	DTEntry entry;
++	void const *prop;
++	unsigned int size;
++
++	for (int i = 0; i < MAX_CPUS && i < 10; i++) {
++		path[9] = (char)('0' + i);
++		if (SecureDTLookupEntry(NULL, path, &entry) != kSuccess) {
++			continue;
++		}
++		if (SecureDTGetProperty(entry, "reg", &prop, &size) != kSuccess || size < 4 ||
++		    *(const uint32_t *)prop != phys_id) {
++			continue;
++		}
++		if (SecureDTGetProperty(entry, "cpu-release-addr", &prop, &size) == kSuccess && size == 8) {
++			return *(const uint64_t *)prop;
++		}
++		return 0;
++	}
++	return 0;
++}
++
+ static int64_t
+ psci_call(uint64_t function, uint64_t arg1, uint64_t arg2, uint64_t arg3)
+ {
+@@ -186,7 +219,23 @@ psci_smp_start_cpu(int cpu)
+ 	__builtin_arm_dsb(DSB_SY);
+ 
+ 	os_atomic_store(&psci_smp_cpu_stage[cpu], PSCI_SMP_CPU_ASKED, release);
+-	status = psci_call(PSCI_CPU_ON, phys_id, entry, 0);
++	uint64_t release_pa = psci_smp_release_addr(phys_id);
++	if (release_pa != 0) {
++		/* spin-table: the entry point into the word the core is watching, then wake it */
++		vm_offset_t page = ml_io_map(trunc_page(release_pa), PAGE_SIZE);
++
++		psci_smp_spin = true;
++		*(volatile uint64_t *)(page + (release_pa & PAGE_MASK)) = entry;
++		__builtin_arm_dsb(DSB_SY);
++		__builtin_arm_sev();
++		printf("psci: cpu %d (MPIDR 0x%x) released from the spin-table at 0x%llx to 0x%llx\n",
++		    cpu, phys_id, release_pa, entry);
++		status = 0;
++	} else if (psci_smp_spin) {
++		status = -1;            /* no PSCI on this board: a core without a release address stays where it is */
++	} else {
++		status = psci_call(PSCI_CPU_ON, phys_id, entry, 0);
++	}
+ 	if (status != 0) {
+ 		os_atomic_store(&psci_smp_cpu_stage[cpu], 0, release);
+ 		printf("psci: cpu %d (MPIDR 0x%x) was not started: the firmware answers %lld (%s)\n",
+@@ -240,7 +289,9 @@ psci_smp_cpu_off(void)
+ 	os_atomic_store(&psci_smp_cpu_stage[cpu_number()], PSCI_SMP_CPU_OFF, release);
+ 	__builtin_arm_dsb(DSB_SY);
+ 
+-	(void) psci_call(PSCI_CPU_OFF, 0, 0, 0);
++	if (!psci_smp_spin) {
++		(void) psci_call(PSCI_CPU_OFF, 0, 0, 0);
++	}
+ 	for (;;) {
+ 		__builtin_arm_wfi();    /* the firmware refused: stay out of the way all the same */
+ 	}
+@@ -343,7 +394,7 @@ psci_smp_stop_others(void)
+ 		while (now < deadline) {
+ 			if (os_atomic_load(&psci_smp_cpu_stage[cpu], acquire) == PSCI_SMP_CPU_OFF) {
+ 				/* it has said it is going; the firmware knows when it has gone (if it can tell at all) */
+-				int64_t state = psci_call(PSCI_AFFINITY_INFO, cdp->cpu_phys_id, 0, 0);
++				int64_t state = psci_smp_spin ? PSCI_AFFINITY_OFF : psci_call(PSCI_AFFINITY_INFO, cdp->cpu_phys_id, 0, 0);
+ 
+ 				if (state == PSCI_AFFINITY_OFF || state < 0) {
+ 					break;
+@@ -352,7 +403,7 @@ psci_smp_stop_others(void)
+ 			now = mach_absolute_time();
+ 		}
+ 		if (os_atomic_load(&psci_smp_cpu_stage[cpu], acquire) != PSCI_SMP_CPU_OFF &&
+-		    psci_call(PSCI_AFFINITY_INFO, cdp->cpu_phys_id, 0, 0) != PSCI_AFFINITY_OFF) {
++		    (psci_smp_spin || psci_call(PSCI_AFFINITY_INFO, cdp->cpu_phys_id, 0, 0) != PSCI_AFFINITY_OFF)) {
+ 			psci_smp_note(" did not stop: it is left running\n", cpu);
+ 		}
+ 	}
+diff --git a/xnuloader/build.sh b/xnuloader/build.sh
+index d8e696a..ee8ea1d 100755
+--- a/xnuloader/build.sh
++++ b/xnuloader/build.sh
+@@ -4,9 +4,21 @@ set -e
+ cd "$(dirname "$0")"
+ # the iPhone's identity for XNU, from the device tree of the builder's own IPSW (not in the repository)
+ [ -f identity.h ] || ./mkidentity.sh
++gic_flags=()
++if [ "${QEMU_GIC_VERSION:-3}" = 2 ]; then
++    gic_flags+=(-DHAKIOS_GIC_V2=1)
++fi
+ 
+-clang --target=aarch64-unknown-windows -ffreestanding -fno-builtin -fno-stack-protector -fshort-wchar \
+-  -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter -c loader.c -o loader.obj
++if [ -n "${HAKIOS_VTIMER_INTID:-}" ]; then
++    case "$HAKIOS_VTIMER_INTID" in
++        1[6-9]|2[0-9]|3[01]) ;;
++        *) echo "HAKIOS_VTIMER_INTID must be 16..31" >&2; exit 1 ;;
++    esac
++    gic_flags+=(-DHAKIOS_VTIMER_INTID="$HAKIOS_VTIMER_INTID")
++fi
++
++clang --target=aarch64-unknown-windows -DPAYLOAD_BASE="${PAYLOAD_BASE:-0xF0000000ULL}" -ffreestanding -fno-builtin -fno-stack-protector -fshort-wchar \
++  "${gic_flags[@]}" -mgeneral-regs-only -O1 -Wall -Wextra -Wno-unused-parameter -c loader.c -o loader.obj
+ # /base: UEFI loads an image at its preferred address when that is free. The PE default (0x140000000)
+ # is in the middle of the phone's largest block of RAM, which XNU needs in one piece.
+ lld-link /subsystem:efi_application /entry:efi_main /nodefaultlib /base:0xA1000000 /out:loader.efi loader.obj
+diff --git a/xnuloader/loader.c b/xnuloader/loader.c
+index 422f9d3..d8d93a3 100644
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -15,7 +15,9 @@
+ /* ------------------------------------------------------------------------ */
+ /* Fixed conventions shared with the boot shim, the packer and the kernel   */
+ 
++#ifndef PAYLOAD_BASE
+ #define PAYLOAD_BASE        0xF0000000ULL
++#endif
+ #define PAYLOAD_MAGIC       0x50554E58u /* "XNUP" */
+ 
+ struct payload_header { uint32_t magic; uint32_t size; };
+@@ -565,7 +567,11 @@ struct platform {
+ 
+ static const struct platform platform_qemu_virt = {
+ 	.name = "qemu-virt", .io_base = 0x08000000, .io_size = 0x08000000,
++#if defined(HAKIOS_GIC_V2)
++	.gic_dist = 0x08000000, .gic_redist = 0x08010000, .uart = 0x09000000, .psci_hvc = 1,
++#else
+ 	.gic_dist = 0x08000000, .gic_redist = 0x080A0000, .uart = 0x09000000, .psci_hvc = 1,
++#endif
+ 	.cores = 8, .core_shift = 0,
+ 	/*
+ 	 * QEMU's emulated cores stop each other all the time (every flush of a page from all the
+@@ -655,9 +661,11 @@ __asm__ (
+         "  mrs x9, s3_3_c4_c4_0\n          str x9, [x10, #328]\n"
+         "  mrs x9, s3_3_c4_c4_1\n          str x9, [x10, #336]\n"
+         /* GICv3 CPU interface: the kernel reprograms it for its own interrupts */
++#if !defined(HAKIOS_GIC_V2)
+         "  mrs x9, icc_pmr_el1\n     str x9, [x10, #344]\n"
+         "  mrs x9, icc_igrpen1_el1\n str x9, [x10, #352]\n"
+         "  mrs x9, icc_bpr1_el1\n    str x9, [x10, #360]\n"
++#endif
+         "  mrs x9, spsel\n"
+         "  cbz x9, 1f\n"                  /* SP_EL0 is only accessible while running on SP_EL1 */
+         "  mrs x9, sp_el0\n        str x9, [x10, #304]\n"
+@@ -678,8 +686,15 @@ __asm__ (
+         /* PSTATE bits the kernel may have left set. PAN in particular is fatal:
+          * UEFI maps its memory as EL0-accessible, so with PAN every data access
+          * (including the exception handler's own stack push) faults. */
++        /* These optional instructions are undefined on Cortex-A53. */
++        "  mrs x9, id_aa64mmfr1_el1\n"
++        "  ubfx x11, x9, #20, #4\n"
++        "  cbz x11, 1f\n"
+         "  .inst 0xd500409f\n"          /* msr PAN, #0 */
++        "1: ubfx x11, x9, #4, #4\n"
++        "  cbz x11, 2f\n"
+         "  .inst 0xd500407f\n"          /* msr UAO, #0 */
++        "2:\n"
+         "  mrs x9, sctlr_el1\n"
+         "  bic x9, x9, #0x1\n"
+         "  bic x9, x9, #0x4\n"
+@@ -714,9 +729,11 @@ __asm__ (
+         "  ldr x9, [x10, #296]\n msr tpidrro_el0, x9\n"
+         "  ldr x9, [x10, #312]\n msr contextidr_el1, x9\n"
+         "  ldr x9, [x10, #320]\n msr mdscr_el1, x9\n"
++#if !defined(HAKIOS_GIC_V2)
+         "  ldr x9, [x10, #344]\n msr icc_pmr_el1, x9\n"
+         "  ldr x9, [x10, #360]\n msr icc_bpr1_el1, x9\n"
+         "  ldr x9, [x10, #352]\n msr icc_igrpen1_el1, x9\n"
++#endif
+         "  ldr x9, [x10, #328]\n msr s3_3_c4_c4_0, x9\n"
+         "  ldr x9, [x10, #336]\n msr s3_3_c4_c4_1, x9\n"
+         "  ldr x9, [x10, #104]\n msr cntkctl_el1, x9\n"
+@@ -850,8 +867,14 @@ __asm__ (
+         ".globl other_cpu_return_stub\n"
+         "other_cpu_return_stub:\n"              /* x0..x7 as for loader_return_stub */
+         "  msr daifset, #0xf\n"
++        "  mrs x9, id_aa64mmfr1_el1\n"
++        "  ubfx x11, x9, #20, #4\n"
++        "  cbz x11, 1f\n"
+         "  .inst 0xd500409f\n"                  /* msr PAN, #0 */
++        "1: ubfx x11, x9, #4, #4\n"
++        "  cbz x11, 2f\n"
+         "  .inst 0xd500407f\n"                  /* msr UAO, #0 */
++        "2:\n"
+         "  mrs x9, sctlr_el1\n"
+         "  bic x9, x9, #0x1\n"
+         "  bic x9, x9, #0x4\n"
+@@ -3427,8 +3450,17 @@ run_kernel(int have_checkpoint, uint64_t checkpoint)
+ 	}
+ 	dt_begin(&w, "gic");
+ 	dt_prop_str(&w, "device_type", "interrupt-controller");
++#if defined(HAKIOS_GIC_V2)
++	dt_prop_str(&w, "compatible", "arm,cortex-a15-gic");
++	dt_prop_u32(&w, "version", 2);
++	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x1000, plat->gic_redist - plat->io_base, 0x2000 };
++#else
+ 	dt_prop_str(&w, "compatible", "arm,gic-v3");
+ 	uint64_t gic_reg[4] = { plat->gic_dist - plat->io_base, 0x10000, plat->gic_redist - plat->io_base, 0x100000 };
++#endif
++#if defined(HAKIOS_VTIMER_INTID)
++	dt_prop_u32(&w, "virtual-timer-intid", HAKIOS_VTIMER_INTID);
++#endif
+ 	dt_prop(&w, "reg", gic_reg, sizeof(gic_reg));
+ 	dt_end(&w);
+ 	if (plat->uart != 0) {

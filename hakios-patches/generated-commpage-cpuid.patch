@@ -1,0 +1,12 @@
+--- /home/laptop/Documents/Codex/2026-11-03/ho/work/coreprime-xnu-loader/session4-before/commpage.c.before-isar-print	2026-11-03 17:50:29.474671434 -0500
++++ /home/laptop/Documents/Codex/2026-11-03/ho/work/hakios/xnu-src/xnu-8796.121.2/osfmk/arm/commpage/commpage.c	2026-11-03 17:50:35.574065103 -0500
+@@ -371,6 +371,9 @@
+ {
+ 	uint64_t bits = 0;
+ 	uint64_t isar0 = __builtin_arm_rsr64("ID_AA64ISAR0_EL1");
++	printf("cpu-id: MIDR=0x%llx ISAR0=0x%llx ISAR1=0x%llx PFR0=0x%llx\n",
++	    __builtin_arm_rsr64("MIDR_EL1"), isar0,
++	    __builtin_arm_rsr64("ID_AA64ISAR1_EL1"), __builtin_arm_rsr64("ID_AA64PFR0_EL1"));
+ 
+ 	if ((isar0 & ID_AA64ISAR0_EL1_TS_MASK) >= ID_AA64ISAR0_EL1_TS_FLAGM_EN) {
+ 		gARM_FEAT_FlagM = 1;

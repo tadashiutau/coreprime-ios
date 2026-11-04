@@ -1,0 +1,21 @@
+--- /home/laptop/Documents/Codex/2026-11-03/ho/work/coreprime-xnu-loader/session4-before/task_policy.c.before-cpumon-once	2026-11-03 19:17:44.740704183 -0500
++++ /home/laptop/Documents/Codex/2026-11-03/ho/work/hakios/xnu-src/xnu-8796.121.2/osfmk/kern/task_policy.c	2026-11-03 19:17:44.748447105 -0500
+@@ -2864,8 +2864,16 @@
+ 				}
+ #endif
+ 
+-				printf("process %s[%d] denied attempt to escape CPU monitor"
+-				    " (missing required entitlement).\n", procname, pid);
++				/*
++				 * Core Prime: no Apple-signed entitlements here, so lsd and friends hit this on every
++				 * work item; the clamp is unchanged, the message is said once (the console is slow).
++				 */
++				static int coreprime_cpumon_warned;
++				if (!coreprime_cpumon_warned) {
++					coreprime_cpumon_warned = 1;
++					printf("process %s[%d] denied attempt to escape CPU monitor"
++					    " (missing required entitlement); further such messages suppressed.\n", procname, pid);
++				}
+ 			}
+ 
+ 			/* configure the limit values */

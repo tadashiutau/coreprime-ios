@@ -1,0 +1,7 @@
+# Apple/Samsung-derived or generated material never goes in this repository
+identity*.h
+*.img
+*.apfs
+*.ipsw
+out/
+signatures/
