@@ -307,3 +307,13 @@ generated `bsd/conf/files`, started from `hakios_input_init`, declared in `sys/h
 - Home GPIO 109, volume up GPIO 107 (active low) -> HAKIOS_BUTTON_HOME / VOLUME_UP.
 User: home and volume-up press/release logged; multi-finger touch logged; iOS responds — the Phone app was opened by touch, Home works.
 Next: power and volume down from the PM8916 PON (INT_RT_STS 0x810 via PMIC arbiter v2 observer channel) — built (kernel b0874141…), test pending.
+
+### Combined run `xnu-combo-600` (fbscale=1, fb_aspect=1, coreprime_cam=1; kernel e3c494d8…)
+
+Letterbox active: `display 375x812 on a panel of 480x800 …, 369 columns from 55`; touch mapped to the same 369 columns.
+Camera step 1 (read-only): every camera clock off (camss_top_ahb, ahb, cci, mclk1, csi1*, ispif, vfe0/ahb/axi, csi_vfe0),
+MCLK1 RCG off; GPIO 27/28/17/29/30 plain GPIO inputs (pull-down); RT5033 bit-bang bus GPIO 22/23 outputs high;
+LDO16 (cam_vio, PMIC peripheral 0x4f) has NO PMIC-arbiter channel for the apps processor (RPM-owned) -> enabling it
+needs an RPM SMD request (or a different route). Next camera step: CCI + MCLK1 clocks, RT5033 rails, check whether
+LDO16 is already on (cannot read it this way), reset/standby sequence, SR200PC20 chip ID over CCI.
+Phone handed to a separate session for a return to LineageOS 16 at the user's request (2026-11-03 night).
